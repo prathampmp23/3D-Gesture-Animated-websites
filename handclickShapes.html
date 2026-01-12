@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Gesture Particle System — FIXED</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+    font-family: sans-serif;
+}
+#ui {
+    position: absolute;
+    top: 15px;
+    left: 15px;
+    color: white;
+    background: rgba(0,0,0,0.75);
+    padding: 12px;
+    border-radius: 6px;
+    z-index: 10;
+    font-size: 14px;
+}
+#debug {
+    margin-top: 6px;
+    color: #0f0;
+    font-size: 12px;
+}
+video {
+    display: none;
+}
+button {
+    margin-top: 4px;
+    width: 100%;
+}
+</style>
+</head>
+
+<body>
+
+<div id="ui">
+    <b>Particle Alchemy</b><br>
+    Pinch = Contract<br>
+    Open Hand = Expand
+    <button onclick="currentShape='sphere'">Sphere</button>
+    <button onclick="currentShape='heart'">Heart</button>
+    <button onclick="currentShape='saturn'">Saturn</button>
+    <div id="debug">Scale: 1.00</div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+
+<!-- THREE -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<!-- MEDIAPIPE -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ===================== CONFIG ===================== */
+
+const PARTICLES = 10000;
+const PINCH_DIST = 0.045;
+const OPEN_DIST  = 0.09;
+const HOLD_FRAMES = 6;
+
+/* ===================== GLOBALS ===================== */
+
+let scene, camera, renderer, particles;
+let positions;
+let scaleFactor = 1;
+let pinchFrames = 0;
+let openFrames  = 0;
+window.currentShape = 'sphere';
+
+/* ===================== THREE INIT ===================== */
+
+initThree();
+initCameraGesture();
+animate();
+
+function initThree() {
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
+    camera.position.z = 15;
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    const geo = new THREE.BufferGeometry();
+    positions = new Float32Array(PARTICLES * 3);
+
+    for (let i = 0; i < PARTICLES; i++) {
+        positions[i*3]     = (Math.random() - 0.5) * 20;
+        positions[i*3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i*3 + 2] = (Math.random() - 0.5) * 20;
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    particles = new THREE.Points(
+        geo,
+        new THREE.PointsMaterial({
+            size: 0.08,
+            color: 0xff77cc,
+            transparent: true,
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending
+        })
+    );
+
+    scene.add(particles);
+
+    addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+    });
+}
+
+/* ===================== HEART CACHE ===================== */
+
+const heart = Array.from({ length: PARTICLES }, () => {
+    const t = Math.random() * Math.PI * 2;
+    const r = Math.cbrt(Math.random());
+    return {
+        x: r * 16 * Math.pow(Math.sin(t), 3),
+        y: r * (13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t)),
+        z: (Math.random() - 0.5) * 6
+    };
+});
+
+/* ===================== SHAPES ===================== */
+
+function target(i) {
+    let x, y, z;
+
+    if (currentShape === 'heart') {
+        const p = heart[i];
+        return {
+            x: p.x * 0.08 * scaleFactor,
+            y: p.y * 0.08 * scaleFactor,
+            z: p.z * scaleFactor
+        };
+    }
+
+    if (currentShape === 'saturn') {
+        if (i % 2 === 0) {
+            const phi = Math.acos(-1 + (2 * i) / PARTICLES);
+            const th  = Math.sqrt(PARTICLES * Math.PI) * phi;
+            x = 4 * Math.cos(th) * Math.sin(phi);
+            y = 4 * Math.sin(th) * Math.sin(phi);
+            z = 4 * Math.cos(phi);
+        } else {
+            const a = Math.random() * Math.PI * 2;
+            const d = 6 + Math.random() * 3;
+            x = Math.cos(a) * d;
+            y = Math.sin(a) * d * 0.3;
+            z = Math.sin(a) * d;
+        }
+        return { x:x*scaleFactor, y:y*scaleFactor, z:z*scaleFactor };
+    }
+
+    const phi = Math.acos(-1 + (2 * i) / PARTICLES);
+    const th  = Math.sqrt(PARTICLES * Math.PI) * phi;
+    return {
+        x: 8 * Math.cos(th) * Math.sin(phi) * scaleFactor,
+        y: 8 * Math.sin(th) * Math.sin(phi) * scaleFactor,
+        z: 8 * Math.cos(phi) * scaleFactor
+    };
+}
+
+/* ===================== ANIMATE ===================== */
+
+function animate() {
+    requestAnimationFrame(animate);
+    const pos = particles.geometry.attributes.position.array;
+
+    for (let i = 0; i < PARTICLES; i++) {
+        const t = target(i);
+        pos[i*3]     += (t.x - pos[i*3])     * 0.05;
+        pos[i*3 + 1] += (t.y - pos[i*3 + 1]) * 0.05;
+        pos[i*3 + 2] += (t.z - pos[i*3 + 2]) * 0.05;
+    }
+
+    particles.geometry.attributes.position.needsUpdate = true;
+    particles.rotation.y += 0.002;
+
+    document.getElementById('debug').textContent =
+        `Scale: ${scaleFactor.toFixed(2)}`;
+
+    renderer.render(scene, camera);
+}
+
+/* ===================== GESTURE ENGINE ===================== */
+
+async function initCameraGesture() {
+    const video = document.getElementById('video');
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    const hands = new Hands({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.8,
+        minTrackingConfidence: 0.8
+    });
+
+    function distance(a, b) {
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    async function process() {
+        await hands.send({ image: video });
+        requestAnimationFrame(process);
+    }
+
+    hands.onResults(res => {
+        if (!res.multiHandLandmarks?.length) {
+            pinchFrames = openFrames = 0;
+            return;
+        }
+
+        const lm = res.multiHandLandmarks[0];
+        const pinch =
+            distance(lm[4], lm[8]) < PINCH_DIST &&
+            distance(lm[4], lm[12]) < PINCH_DIST;
+
+        const open =
+            distance(lm[4], lm[8]) > OPEN_DIST &&
+            distance(lm[4], lm[12]) > OPEN_DIST;
+
+        if (pinch) {
+            pinchFrames++;
+            openFrames = 0;
+        } else if (open) {
+            openFrames++;
+            pinchFrames = 0;
+        } else {
+            pinchFrames = openFrames = 0;
+        }
+
+        if (pinchFrames >= HOLD_FRAMES) {
+            scaleFactor = Math.max(0.6, scaleFactor - 0.02);
+        }
+        if (openFrames >= HOLD_FRAMES) {
+            scaleFactor = Math.min(1.6, scaleFactor + 0.02);
+        }
+    });
+
+    process();
+}
+</script>
+
+</body>
+</html>

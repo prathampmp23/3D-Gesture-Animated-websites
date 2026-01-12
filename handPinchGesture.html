@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Hand Gesture Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: white;
+            background: rgba(0,0,0,0.6); padding: 20px; border-radius: 12px;
+            backdrop-filter: blur(5px); z-index: 10; pointer-events: none;
+        }
+        /* Hidden video element for MediaPipe processing */
+        #input_video { display: none; }
+        canvas { display: block; }
+        .status { color: #00ffcc; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h2>Gesture Control</h2>
+    <p>Status: <span id="status" class="status">Initializing Camera...</span></p>
+    <p>• Move hand to move particles</p>
+    <p>• <b>Pinch fingers</b> to trigger Explosion</p>
+    <p id="shape-info">Current: Sphere</p>
+</div>
+
+<video id="input_video"></video>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+
+    // --- THREE.JS SETUP ---
+    let scene, camera, renderer, particles, positions, velocities;
+    const particleCount = 8000;
+    let targetX = 0, targetY = 0;
+    let currentShape = 'sphere';
+
+    function initThree() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 15;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const geo = new THREE.BufferGeometry();
+        positions = new Float32Array(particleCount * 3);
+        velocities = new Float32Array(particleCount * 3);
+        const colors = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < particleCount; i++) {
+            positions[i*3] = (Math.random() - 0.5) * 30;
+            positions[i*3+1] = (Math.random() - 0.5) * 30;
+            positions[i*3+2] = (Math.random() - 0.5) * 30;
+            colors[i*3] = Math.random();
+            colors[i*3+1] = 0.5;
+            colors[i*3+2] = 1.0;
+        }
+
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const mat = new THREE.PointsMaterial({
+            size: 0.08,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            transparent: true
+        });
+
+        particles = new THREE.Points(geo, mat);
+        scene.add(particles);
+    }
+
+    // --- SHAPE LOGIC ---
+    function getShapePos(i, type) {
+        if (type === 'sphere') {
+            const phi = Math.acos(-1 + (2 * i) / particleCount);
+            const theta = Math.sqrt(particleCount * Math.PI) * phi;
+            return { x: 7 * Math.cos(theta) * Math.sin(phi), y: 7 * Math.sin(theta) * Math.sin(phi), z: 7 * Math.cos(phi) };
+        }
+        return { x: 0, y: 0, z: 0 };
+    }
+
+    function explode() {
+        for (let i = 0; i < particleCount * 3; i++) {
+            velocities[i] = (Math.random() - 0.5) * 1.5;
+        }
+    }
+
+    // --- MEDIAPIPE HANDS SETUP ---
+    const videoElement = document.getElementById('input_video');
+    const statusText = document.getElementById('status');
+
+    function onResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            statusText.innerText = "Hand Detected";
+            const hand = results.multiHandLandmarks[0];
+            
+            // Map Index Finger (Landmark 8) to Scene
+            targetX = (hand[8].x - 0.5) * -30; // Inverted for mirror effect
+            targetY = (hand[8].y - 0.5) * -20;
+
+            // Detect Pinch (Index 8 and Thumb 4)
+            const dx = hand[8].x - hand[4].x;
+            const dy = hand[8].y - hand[4].y;
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            
+            if (distance < 0.05) {
+                explode();
+                statusText.innerText = "GESTURE: PINCH!";
+            }
+        } else {
+            statusText.innerText = "Looking for hand...";
+        }
+    }
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    const cameraHelper = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 640, height: 480
+    });
+    cameraHelper.start();
+
+    // --- ANIMATION LOOP ---
+    function animate() {
+        requestAnimationFrame(animate);
+        const posArr = particles.geometry.attributes.position.array;
+
+        for (let i = 0; i < particleCount; i++) {
+            const target = getShapePos(i, currentShape);
+            
+            // Move toward hand + shape offset
+            const destX = target.x + targetX;
+            const destY = target.y + targetY;
+
+            posArr[i*3] += (destX - posArr[i*3]) * 0.05 + velocities[i*3];
+            posArr[i*3+1] += (destY - posArr[i*3+1]) * 0.05 + velocities[i*3+1];
+            posArr[i*3+2] += (target.z - posArr[i*3+2]) * 0.05 + velocities[i*3+2];
+
+            velocities[i*3] *= 0.9;
+            velocities[i*3+1] *= 0.9;
+            velocities[i*3+2] *= 0.9;
+        }
+
+        particles.geometry.attributes.position.needsUpdate = true;
+        renderer.render(scene, camera);
+    }
+
+    initThree();
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
