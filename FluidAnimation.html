@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D Fluid Cube – Gravity & Settling</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #050505;
+        font-family: monospace;
+      }
+      #ui {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 12px;
+        z-index: 10;
+      }
+      video {
+        position: absolute;
+        bottom: 20px;
+        right: 20px;
+        width: 160px;
+        opacity: 0.35;
+        transform: scaleX(-1);
+      }
+      button {
+        padding: 16px 48px;
+        font-size: 18px;
+        background: #00FF99;
+        border: none;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      #overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 20;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="ui">
+      <b>3D Fluid Cube</b><br /><br />
+      Use Palm → rotate cube<br />
+      Fluid settles by gravity
+    </div>
+
+    <div id="overlay">
+      <button id="startBtn">START</button>
+    </div>
+
+    <video id="video" autoplay playsinline></video>
+
+    <!-- THREE -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+    <!-- HAND TRACKING -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+    <script>
+      let scene, camera, renderer;
+      let cubeGroup, cubeEdges, particles;
+      let velocities = [];
+      let detector;
+      let prevFingerPos = null;
+
+      const PARTICLE_COUNT = 100000;
+      const CUBE_SIZE = 3;
+
+      // ---- PHYSICS CONSTANTS ----
+      const GRAVITY = 0.0009;
+      const FLUID_DAMPING = 0.995;
+      const INERTIA_STRENGTH = 0.18;
+      const BOUNDARY_BOUNCE = 0.25;
+
+      const video = document.getElementById("video");
+      const startBtn = document.getElementById("startBtn");
+
+      async function init() {
+        scene = new THREE.Scene();
+
+        camera = new THREE.PerspectiveCamera(
+          60,
+          innerWidth / innerHeight,
+          0.1,
+          100
+        );
+        camera.position.z = 6;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(innerWidth, innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // ---- CUBE GROUP ----
+        cubeGroup = new THREE.Group();
+        scene.add(cubeGroup);
+
+        const boxGeo = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
+        const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+        const edgesMat = new THREE.LineBasicMaterial({ color: 0x00ff99 });
+        cubeEdges = new THREE.LineSegments(edgesGeo, edgesMat);
+        cubeGroup.add(cubeEdges);
+
+        // ---- PARTICLES ----
+        const positions = [];
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+          positions.push(
+            (Math.random() - 0.5) * CUBE_SIZE,
+            (Math.random() - 0.5) * CUBE_SIZE,
+            (Math.random() - 0.5) * CUBE_SIZE
+          );
+          velocities.push(new THREE.Vector3());
+        }
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(positions, 3)
+        );
+
+        const mat = new THREE.PointsMaterial({
+          color: 0x00ff99,
+          size: 0.014,
+        });
+
+        particles = new THREE.Points(geo, mat);
+        cubeGroup.add(particles);
+
+        // ---- HAND TRACKING ----
+        await tf.setBackend("webgl");
+        await tf.ready();
+
+        detector = await handPoseDetection.createDetector(
+          handPoseDetection.SupportedModels.MediaPipeHands,
+          {
+            runtime: "mediapipe",
+            solutionPath: "https://cdn.jsdelivr.net/npm/@mediapipe/hands",
+            maxHands: 1,
+          }
+        );
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+        });
+        video.srcObject = stream;
+        await video.play();
+
+        document.getElementById("overlay").style.display = "none";
+        animate();
+      }
+
+      async function animate() {
+        requestAnimationFrame(animate);
+
+        let angularVelocity = new THREE.Vector2(0, 0);
+
+        const hands = await detector.estimateHands(video, {
+          flipHorizontal: true,
+        });
+        if (hands.length) {
+          const k = hands[0].keypoints;
+          const index = k[8];
+          const middle = k[12];
+
+          const cx = (index.x + middle.x) / 2;
+          const cy = (index.y + middle.y) / 2;
+
+          if (prevFingerPos) {
+            angularVelocity.x = (cy - prevFingerPos.y) * 0.002;
+            angularVelocity.y = (cx - prevFingerPos.x) * 0.002;
+          }
+          prevFingerPos = { x: cx, y: cy };
+        } else {
+          prevFingerPos = null;
+        }
+
+        // ---- ROTATE CUBE ----
+        cubeGroup.rotation.x += angularVelocity.x;
+        cubeGroup.rotation.y += angularVelocity.y;
+
+        // ---- FLUID SIMULATION (LOCAL SPACE) ----
+        const pos = particles.geometry.attributes.position;
+        const limit = CUBE_SIZE / 2;
+
+        for (let i = 0; i < pos.count; i++) {
+          let p = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+
+          let v = velocities[i];
+
+          // gravity (local Y-)
+          v.y -= GRAVITY;
+
+          // viscosity
+          v.multiplyScalar(FLUID_DAMPING);
+
+          // inertia from cube rotation
+          const swirl = new THREE.Vector3(
+            angularVelocity.y * p.z,
+            -angularVelocity.x * p.z,
+            -angularVelocity.y * p.x
+          );
+          v.add(swirl.multiplyScalar(INERTIA_STRENGTH));
+
+          p.add(v);
+
+          // confinement
+          ["x", "y", "z"].forEach((axis) => {
+            if (p[axis] > limit) {
+              p[axis] = limit;
+              v[axis] *= -BOUNDARY_BOUNCE;
+            }
+            if (p[axis] < -limit) {
+              p[axis] = -limit;
+              v[axis] *= -BOUNDARY_BOUNCE;
+            }
+          });
+
+          pos.setXYZ(i, p.x, p.y, p.z);
+        }
+
+        pos.needsUpdate = true;
+        renderer.render(scene, camera);
+      }
+
+      startBtn.onclick = init;
+    </script>
+  </body>
+</html>
